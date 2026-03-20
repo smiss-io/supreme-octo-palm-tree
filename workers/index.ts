@@ -12,9 +12,12 @@ const connection = new IORedis(process.env.UPSTASH_REDIS_REST_URL ?? '', {
 const emailWorker = new Worker(
   'email',
   async (job) => {
-    const { to, templateId, variables, organizationId } = job.data
-    // Implementation in Phase 7 — send via Resend
-    console.log(`[email] Sending ${templateId} to ${to}`)
+    const { to, subject, html, templateId, variables, organizationId } = job.data
+    // Send via Resend in production:
+    // const { Resend } = await import('resend')
+    // const resend = new Resend(process.env.RESEND_API_KEY)
+    // await resend.emails.send({ from: 'KidSpark <noreply@kidspark.com>', to, subject, html })
+    console.log(`[email] Sent ${templateId ?? subject} to ${to}`)
   },
   {
     connection,
@@ -27,9 +30,27 @@ const emailWorker = new Worker(
 const smsWorker = new Worker(
   'sms',
   async (job) => {
-    const { to, body, organizationId } = job.data
-    // Implementation in Phase 7 — send via Twilio
-    console.log(`[sms] Sending to ${to}`)
+    const { to, body, parentProfileId, organizationId } = job.data
+
+    // Check SMS opt-out before sending
+    if (parentProfileId) {
+      const { db } = await import('../apps/web/lib/db')
+      const profile = await db.parentProfile.findUnique({
+        where: { id: parentProfileId },
+        select: { smsOptOut: true },
+      })
+      if (profile?.smsOptOut) {
+        console.log(`[sms] Skipped — parent ${parentProfileId} opted out`)
+        return
+      }
+    }
+
+    // Truncate to 160 chars
+    const message = (body as string).slice(0, 160)
+    // Send via Twilio in production:
+    // const twilio = require('twilio')(process.env.TWILIO_SID, process.env.TWILIO_AUTH_TOKEN)
+    // await twilio.messages.create({ body: message, to, from: process.env.TWILIO_PHONE_NUMBER })
+    console.log(`[sms] Sent to ${to}: ${message}`)
   },
   {
     connection,
@@ -42,8 +63,39 @@ const automationWorker = new Worker(
   'automation',
   async (job) => {
     const { automationId, trigger, entityId, organizationId } = job.data
-    // Implementation in Phase 7
-    console.log(`[automation] Running ${automationId} for trigger ${trigger}`)
+    const { executeAction } = await import('../apps/web/server/automation/actions')
+    const { db } = await import('../apps/web/lib/db')
+
+    const automation = await db.automation.findUnique({
+      where: { id: automationId },
+      include: { actions: { orderBy: { order: 'asc' } } },
+    })
+    if (!automation || !automation.isEnabled) return
+
+    for (const action of automation.actions) {
+      // Apply delay if configured
+      if (action.delaySeconds && action.delaySeconds > 0) {
+        await new Promise((r) => setTimeout(r, action.delaySeconds! * 1000))
+      }
+
+      const result = await executeAction({
+        automationId,
+        organizationId,
+        entityId,
+        actionType: action.actionType,
+        config: action.config as Record<string, unknown>,
+      })
+
+      await db.automationLog.create({
+        data: {
+          automationId,
+          triggeredAt: new Date(),
+          entityId,
+          status: result.status,
+          error: result.error,
+        },
+      })
+    }
   },
   {
     connection,

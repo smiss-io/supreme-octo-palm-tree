@@ -164,6 +164,8 @@ model ParentProfile {
   phone            String? // encrypted at rest
   stripeCustomerId String? @unique
   timezone         String  @default("America/Los_Angeles")
+  smsOptOut        Boolean @default(false) // STOP = true, never send SMS again
+  smsConsent       Boolean @default(false) // opt-in required before sending
 
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   children Child[]
