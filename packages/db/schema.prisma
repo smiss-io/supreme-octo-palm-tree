@@ -1,0 +1,627 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── TENANCY & AUTH ──────────────────────────────────────────────────────────
+
+model Organization {
+  id               String    @id @default(uuid())
+  name             String
+  slug             String    @unique
+  logoUrl          String?
+  subscriptionTier Tier      @default(LAUNCH)
+  stripeCustomerId String?   @unique
+  stripeAccountId  String?   @unique // Stripe Connect
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  users            OrganizationUser[]
+  locations        Location[]
+  activities       Activity[]
+  students         Student[]
+  payments         Payment[]
+  automations      Automation[]
+  webhookEndpoints WebhookEndpoint[]
+
+  @@index([slug])
+}
+
+enum Tier {
+  LAUNCH // $129/mo
+  GROW   // $199/mo
+  SCALE  // $399/mo
+}
+
+model User {
+  id                  String     @id @default(uuid())
+  email               String     @unique
+  emailVerified       DateTime?
+  passwordHash        String?    // bcrypt cost factor 12+
+  role                GlobalRole @default(PARENT)
+  mfaEnabled          Boolean    @default(false)
+  mfaSecret           String?    // encrypted at rest
+  failedLoginAttempts Int        @default(0)
+  lockedUntil         DateTime?
+  lastLoginAt         DateTime?
+  lastLoginIp         String?    // store hashed IP, not raw
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+  deletedAt           DateTime?  // soft delete for GDPR/COPPA
+
+  profile        ParentProfile?
+  orgMemberships OrganizationUser[]
+  sessions       Session[]
+  auditLogs      AuditLog[]
+
+  @@index([email])
+}
+
+enum GlobalRole {
+  PARENT
+  PROVIDER
+  STAFF
+  ADMIN
+}
+
+model OrganizationUser {
+  id             String @id @default(uuid())
+  userId         String
+  organizationId String
+  role           OrgRole @default(VIEWER)
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, organizationId])
+}
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MANAGER
+  INSTRUCTOR
+  VIEWER
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique // SHA-256 hashed
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  ipAddress String?  // hashed
+  userAgent String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@index([expiresAt])
+}
+
+// ─── PARENT & CHILDREN ───────────────────────────────────────────────────────
+
+model ParentProfile {
+  id               String  @id @default(uuid())
+  userId           String  @unique
+  firstName        String
+  lastName         String
+  phone            String? // encrypted at rest
+  stripeCustomerId String? @unique
+  timezone         String  @default("America/Los_Angeles")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  children Child[]
+  bookings Booking[]
+}
+
+model Child {
+  id               String    @id @default(uuid())
+  parentProfileId  String
+  firstName        String
+  lastName         String
+  dateOfBirth      DateTime  // encrypted at rest
+  // COPPA: No child PII stored beyond what's operationally necessary
+  // All child data encrypted with AES-256-GCM
+  medicalNotes     String?   // encrypted at rest
+  allergies        String?   // encrypted at rest
+  emergencyContact Json?     // encrypted at rest: {name, phone, relationship}
+  photoConsent     Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  deletedAt        DateTime? // soft delete
+
+  parent          ParentProfile    @relation(fields: [parentProfileId], references: [id], onDelete: Cascade)
+  bookings        Booking[]
+  attendance      AttendanceRecord[]
+  progressRecords ProgressRecord[]
+
+  @@index([parentProfileId])
+}
+
+// ─── LOCATIONS & ACTIVITIES ──────────────────────────────────────────────────
+
+model Location {
+  id             String  @id @default(uuid())
+  organizationId String
+  name           String
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  state          String?
+  zip            String?
+  lat            Float?
+  lng            Float?
+  isVirtual      Boolean @default(false)
+  timezone       String  @default("America/Los_Angeles")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  activities   Activity[]
+
+  @@index([organizationId])
+  @@index([lat, lng])
+}
+
+model Activity {
+  id             String         @id @default(uuid())
+  organizationId String
+  locationId     String?
+  name           String
+  description    String?
+  format         ActivityFormat
+  category       String         // STEM, Art, Dance, Sports, etc.
+  minAge         Int?           // months
+  maxAge         Int?           // months
+  capacity       Int?
+  isPublished    Boolean        @default(false)
+  isFeatured     Boolean        @default(false)
+  imageUrls      String[]       // S3 signed URL references
+  tags           String[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  deletedAt      DateTime?
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  location     Location?        @relation(fields: [locationId], references: [id])
+  sessions     ActivitySession[]
+  pricing      PricingPlan[]
+  addOns       AddOn[]
+  customFields CustomField[]
+
+  @@index([organizationId])
+  @@index([category])
+  @@index([isPublished, isFeatured])
+}
+
+enum ActivityFormat {
+  IN_PERSON
+  ONLINE
+  BLENDED
+  DROP_IN
+  APPOINTMENT
+  CAMP_SINGLE_DAY
+  CAMP_MULTI_DAY
+  SEMESTER
+  PRIVATE_PARTY
+  FREE_TRIAL
+}
+
+model ActivitySession {
+  id            String        @id @default(uuid())
+  activityId    String
+  instructorId  String?       // OrganizationUser id
+  startDate     DateTime
+  endDate       DateTime?
+  recurRule     String?       // iCal RRULE string for recurring
+  durationMin   Int           // duration in minutes
+  capacity      Int?
+  enrolledCount Int           @default(0)
+  status        SessionStatus @default(SCHEDULED)
+
+  activity   Activity           @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  bookings   Booking[]
+  attendance AttendanceRecord[]
+
+  @@index([activityId])
+  @@index([startDate])
+}
+
+enum SessionStatus {
+  SCHEDULED
+  CANCELLED
+  COMPLETED
+}
+
+// ─── PRICING ──────────────────────────────────────────────────────────────────
+
+model PricingPlan {
+  id             String      @id @default(uuid())
+  activityId     String
+  name           String
+  priceInCents   Int
+  currency       String      @default("usd")
+  billingType    BillingType
+  installments   Int?        // for payment plans
+  depositPercent Int?        // 0-100 for camps
+  stripePriceId  String?
+
+  activity Activity  @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  bookings Booking[]
+}
+
+enum BillingType {
+  ONE_TIME
+  MONTHLY_RECURRING
+  PAYMENT_PLAN
+  DEPOSIT_THEN_REMAINDER
+  MEMBERSHIP
+  CLASS_PACK
+}
+
+model AddOn {
+  id           String  @id @default(uuid())
+  activityId   String
+  name         String
+  description  String?
+  priceInCents Int
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+}
+
+// ─── BOOKINGS ─────────────────────────────────────────────────────────────────
+
+model Booking {
+  id                String        @id @default(uuid())
+  parentProfileId   String
+  childId           String
+  activitySessionId String
+  pricingPlanId     String
+  status            BookingStatus @default(PENDING)
+  addOnIds          String[]
+  customFieldData   Json?         // encrypted if contains PII
+  waiverSignedAt    DateTime?
+  waiverSignatureId String?       // reference to stored signature
+  totalInCents      Int
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  cancelledAt       DateTime?
+  cancellationReason String?
+
+  parent        ParentProfile   @relation(fields: [parentProfileId], references: [id])
+  child         Child           @relation(fields: [childId], references: [id])
+  session       ActivitySession @relation(fields: [activitySessionId], references: [id])
+  pricingPlan   PricingPlan     @relation(fields: [pricingPlanId], references: [id])
+  payments      Payment[]
+  waitlistEntry WaitlistEntry?
+
+  @@index([parentProfileId])
+  @@index([activitySessionId])
+  @@index([status])
+}
+
+enum BookingStatus {
+  PENDING
+  CONFIRMED
+  WAITLISTED
+  CANCELLED
+  REFUNDED
+  COMPLETED
+}
+
+model WaitlistEntry {
+  id         String    @id @default(uuid())
+  bookingId  String    @unique
+  position   Int
+  notifiedAt DateTime?
+  expiresAt  DateTime?
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+}
+
+// ─── PAYMENTS ────────────────────────────────────────────────────────────────
+
+model Payment {
+  id                    String        @id @default(uuid())
+  organizationId        String
+  bookingId             String?
+  parentProfileId       String?
+  stripePaymentIntentId String?       @unique
+  stripeChargeId        String?       @unique
+  amount                Int           // in cents
+  currency              String        @default("usd")
+  status                PaymentStatus @default(PENDING)
+  method                PaymentMethod @default(CARD)
+  // NEVER store: card numbers, CVV, expiry in raw form
+  // Store only Stripe's token/payment method id
+  stripePaymentMethodId String?       // Stripe PM id (not raw card data)
+  last4                 String?       // last 4 digits only (PCI safe)
+  brand                 String?       // visa, mastercard, etc.
+  paidAt                DateTime?
+  refundedAt            DateTime?
+  refundedAmount        Int?
+  stripeRefundId        String?
+  metadata              Json?
+  createdAt             DateTime      @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  booking      Booking?     @relation(fields: [bookingId], references: [id])
+
+  @@index([organizationId])
+  @@index([bookingId])
+  @@index([stripePaymentIntentId])
+}
+
+enum PaymentStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  DISPUTED
+}
+
+enum PaymentMethod {
+  CARD
+  ACH
+  CASH
+  CHECK
+  STORE_CREDIT
+  GIFT_CARD
+}
+
+model StoreCredit {
+  id              String    @id @default(uuid())
+  organizationId  String
+  parentProfileId String
+  amountInCents   Int
+  usedInCents     Int       @default(0)
+  reason          String?
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+}
+
+model GiftCard {
+  id             String    @id @default(uuid())
+  organizationId String
+  code           String    @unique // hashed for lookup
+  balanceInCents Int
+  usedInCents    Int       @default(0)
+  purchasedById  String?
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime?
+
+  @@index([code])
+}
+
+model CouponCode {
+  id             String       @id @default(uuid())
+  organizationId String
+  code           String
+  discountType   DiscountType
+  discountValue  Int          // cents or percent * 100
+  appliesToAll   Boolean      @default(true)
+  maxUses        Int?
+  currentUses    Int          @default(0)
+  expiresAt      DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@unique([organizationId, code])
+}
+
+enum DiscountType {
+  FIXED_AMOUNT
+  PERCENTAGE
+}
+
+// ─── ATTENDANCE & PROGRESS ────────────────────────────────────────────────────
+
+model AttendanceRecord {
+  id           String           @id @default(uuid())
+  sessionId    String
+  childId      String
+  status       AttendanceStatus @default(PRESENT)
+  checkedInAt  DateTime?
+  checkedOutAt DateTime?
+  notes        String?
+
+  session ActivitySession @relation(fields: [sessionId], references: [id])
+  child   Child           @relation(fields: [childId], references: [id])
+
+  @@unique([sessionId, childId])
+  @@index([sessionId])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
+model ProgressRecord {
+  id             String   @id @default(uuid())
+  childId        String
+  activityId     String
+  organizationId String
+  milestoneId    String
+  achievedAt     DateTime @default(now())
+  notes          String?
+  awardedById    String?  // OrganizationUser id
+
+  child Child @relation(fields: [childId], references: [id])
+}
+
+model Milestone {
+  id             String  @id @default(uuid())
+  organizationId String
+  activityId     String?
+  name           String
+  description    String?
+  badgeImageUrl  String?
+  order          Int     @default(0)
+}
+
+// ─── CUSTOM FORMS ────────────────────────────────────────────────────────────
+
+model CustomField {
+  id         String    @id @default(uuid())
+  activityId String
+  label      String
+  fieldType  FieldType
+  required   Boolean   @default(false)
+  options    String[]  // for SELECT types
+  order      Int       @default(0)
+  isPii      Boolean   @default(false) // triggers encryption in storage
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+}
+
+enum FieldType {
+  TEXT
+  TEXTAREA
+  SELECT
+  MULTI_SELECT
+  CHECKBOX
+  DATE
+  PHONE
+  E_SIGNATURE
+}
+
+// ─── AUTOMATIONS (NATIVE WORKFLOW ENGINE) ─────────────────────────────────────
+
+model Automation {
+  id             String            @id @default(uuid())
+  organizationId String
+  name           String
+  isEnabled      Boolean           @default(true)
+  trigger        AutomationTrigger
+  triggerConfig  Json              // e.g., { "consecutiveMissed": 2 }
+  actions        AutomationAction[]
+  createdAt      DateTime          @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  logs         AutomationLog[]
+}
+
+enum AutomationTrigger {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  CLASS_24H_BEFORE
+  CLASS_1H_BEFORE
+  CAMP_ENDED
+  CONSECUTIVE_ABSENCES
+  WAITLIST_SPOT_OPENED
+  MEMBERSHIP_EXPIRING
+  PAYMENT_FAILED
+  REVIEW_REQUEST
+  ENROLLMENT_THRESHOLD // AI forecasting trigger
+}
+
+model AutomationAction {
+  id           String     @id @default(uuid())
+  automationId String
+  actionType   ActionType
+  config       Json       // email template, sms body, delay, etc.
+  order        Int        @default(0)
+  delaySeconds Int?       // execute N seconds after trigger
+
+  automation Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+}
+
+enum ActionType {
+  SEND_EMAIL
+  SEND_SMS
+  ADD_TO_WAITLIST
+  ISSUE_STORE_CREDIT
+  CREATE_TASK
+  NOTIFY_STAFF
+  WEBHOOK
+}
+
+model AutomationLog {
+  id           String   @id @default(uuid())
+  automationId String
+  triggeredAt  DateTime @default(now())
+  entityId     String   // bookingId, childId, etc.
+  status       String   // success, failed, skipped
+  error        String?
+
+  automation Automation @relation(fields: [automationId], references: [id])
+}
+
+// ─── COMMUNICATIONS ───────────────────────────────────────────────────────────
+
+model MessageTemplate {
+  id             String   @id @default(uuid())
+  organizationId String
+  name           String
+  channel        String   // email, sms
+  subject        String?
+  body           String   // Handlebars template
+  createdAt      DateTime @default(now())
+}
+
+// ─── AI FORECASTING ───────────────────────────────────────────────────────────
+
+model EnrollmentForecast {
+  id                  String    @id @default(uuid())
+  organizationId      String
+  activitySessionId   String
+  forecastedAt        DateTime  @default(now())
+  predictedEnrollment Int
+  actualEnrollment    Int?
+  trendPercent        Float     // vs same period last season
+  alertThreshold      Int       @default(70) // percent capacity
+  alertSentAt         DateTime?
+}
+
+// ─── STUDENTS (Provider-side roster) ──────────────────────────────────────────
+
+model Student {
+  id             String @id @default(uuid())
+  organizationId String
+  firstName      String
+  lastName       String
+  notes          String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+// ─── AUDIT LOGGING ────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String   // e.g., "booking.created", "payment.refunded"
+  entityType String
+  entityId   String
+  ipAddress  String?  // hashed
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model WebhookEndpoint {
+  id             String   @id @default(uuid())
+  organizationId String
+  url            String
+  secret         String   // HMAC-SHA256 signing secret, stored encrypted
+  events         String[] // event types to receive
+  isEnabled      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
