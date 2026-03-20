@@ -12,6 +12,7 @@ import { progressRouter } from './progress'
 import { automationRouter } from './automation'
 import { reportingRouter } from './reporting'
 import { locationRouter } from './location'
+import { milestoneRouter } from './milestone'
 
 export const appRouter = router({
   auth: authRouter,
@@ -27,6 +28,7 @@ export const appRouter = router({
   automation: automationRouter,
   reporting: reportingRouter,
   location: locationRouter,
+  milestone: milestoneRouter,
 })
 
 export type AppRouter = typeof appRouter
