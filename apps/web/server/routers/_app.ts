@@ -4,7 +4,7 @@ import { organizationRouter } from './organization'
 import { activityRouter } from './activity'
 import { sessionRouter } from './session'
 import { bookingRouter } from './booking'
-import { paymentRouter } from './payment'
+import { paymentRouter, giftCardRouter } from './payment'
 import { parentRouter } from './parent'
 import { childRouter } from './child'
 import { attendanceRouter } from './attendance'
@@ -21,6 +21,7 @@ export const appRouter = router({
   session: sessionRouter,
   booking: bookingRouter,
   payment: paymentRouter,
+  giftCard: giftCardRouter,
   parent: parentRouter,
   child: childRouter,
   attendance: attendanceRouter,

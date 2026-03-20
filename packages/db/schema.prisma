@@ -405,6 +405,32 @@ model Payment {
   @@index([stripePaymentIntentId])
 }
 
+model LedgerEntry {
+  id               String      @id @default(uuid())
+  organizationId   String
+  stripePayoutId   String?
+  paymentId        String?
+  bookingId        String?
+  type             LedgerType
+  grossAmountCents Int
+  stripeFeesCents  Int         @default(0)
+  platformFeeCents Int         @default(0)
+  netAmountCents   Int
+  reconciled       Boolean     @default(false)
+  createdAt        DateTime    @default(now())
+
+  @@index([organizationId])
+  @@index([stripePayoutId])
+}
+
+enum LedgerType {
+  CHARGE
+  REFUND
+  PAYOUT
+  FEE
+  ADJUSTMENT
+}
+
 enum PaymentStatus {
   PENDING
   PROCESSING
