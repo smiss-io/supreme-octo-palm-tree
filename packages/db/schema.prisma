@@ -17,6 +17,10 @@ model Organization {
   subscriptionTier Tier      @default(LAUNCH)
   stripeCustomerId String?   @unique
   stripeAccountId  String?   @unique // Stripe Connect
+  stripeOnboarded  Boolean   @default(false)
+  allowedDomain    String?   // for embed widget CSP frame-ancestors
+  timezone         String    @default("America/Los_Angeles")
+  siblingDiscount  Int?      // percentage, e.g. 10 = 10% off 2nd child
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
@@ -27,6 +31,7 @@ model Organization {
   payments         Payment[]
   automations      Automation[]
   webhookEndpoints WebhookEndpoint[]
+  staffInvites     StaffInvite[]
 
   @@index([slug])
 }
@@ -53,10 +58,12 @@ model User {
   updatedAt           DateTime   @updatedAt
   deletedAt           DateTime?  // soft delete for GDPR/COPPA
 
-  profile        ParentProfile?
-  orgMemberships OrganizationUser[]
-  sessions       Session[]
-  auditLogs      AuditLog[]
+  profile             ParentProfile?
+  orgMemberships      OrganizationUser[]
+  sessions            Session[]
+  auditLogs           AuditLog[]
+  verificationTokens  VerificationToken[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([email])
 }
@@ -101,6 +108,50 @@ model Session {
 
   @@index([token])
   @@index([expiresAt])
+}
+
+// ─── VERIFICATION & TOKENS ───────────────────────────────────────────────────
+
+model VerificationToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique // SHA-256 hashed
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique // SHA-256 hashed
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([token])
+}
+
+model StaffInvite {
+  id             String   @id @default(uuid())
+  organizationId String
+  email          String
+  role           OrgRole  @default(INSTRUCTOR)
+  token          String   @unique // SHA-256 hashed
+  invitedById    String
+  expiresAt      DateTime
+  acceptedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@index([token])
 }
 
 // ─── PARENT & CHILDREN ───────────────────────────────────────────────────────

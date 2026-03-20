@@ -11,6 +11,8 @@ export {
 
 export { encrypt, decrypt, encryptJson, decryptJson } from './encryption'
 
+export { generateToken, hashToken } from './tokens'
+
 export {
   calculateAgeInYears,
   calculateAgeInMonths,
