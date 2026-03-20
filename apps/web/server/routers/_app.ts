@@ -11,6 +11,7 @@ import { attendanceRouter } from './attendance'
 import { progressRouter } from './progress'
 import { automationRouter } from './automation'
 import { reportingRouter } from './reporting'
+import { forecastRouter } from './forecast'
 import { locationRouter } from './location'
 import { milestoneRouter } from './milestone'
 
@@ -28,6 +29,7 @@ export const appRouter = router({
   progress: progressRouter,
   automation: automationRouter,
   reporting: reportingRouter,
+  forecast: forecastRouter,
   location: locationRouter,
   milestone: milestoneRouter,
 })

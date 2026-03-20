@@ -103,12 +103,35 @@ const automationWorker = new Worker(
   }
 )
 
-// Forecast worker — concurrency 1 (weekly cron)
+// Forecast worker — concurrency 1 (weekly cron, Monday 7 AM UTC)
 const forecastWorker = new Worker(
   'forecast',
   async (job) => {
-    // Implementation in Phase 8 — AI enrollment forecasting
-    console.log('[forecast] Running enrollment forecast')
+    const { runOrganizationForecast } = await import('../apps/web/server/ai/forecasting')
+    const { db } = await import('../apps/web/lib/db')
+    const { hasFeature } = await import('../apps/web/lib/tiers')
+
+    // Find all SCALE orgs
+    const scaleOrgs = await db.organization.findMany({
+      where: { tier: 'SCALE' },
+      select: { id: true, name: true },
+    })
+
+    console.log(`[forecast] Running forecasts for ${scaleOrgs.length} SCALE orgs`)
+
+    for (const org of scaleOrgs) {
+      try {
+        const summary = await runOrganizationForecast(org.id)
+        console.log(`[forecast] ${org.name}: ${summary.forecasts.length} sessions, ${summary.alertCount} alerts`)
+
+        // Enqueue alert emails for sessions needing attention
+        for (const forecast of summary.forecasts.filter((f) => f.alertRequired)) {
+          console.log(`[forecast] Alert: ${forecast.activityName} — ${forecast.alertReason}`)
+        }
+      } catch (err) {
+        console.error(`[forecast] Error for org ${org.id}:`, err)
+      }
+    }
   },
   {
     connection,
