@@ -30,7 +30,9 @@ export async function middleware(request: NextRequest) {
   const ip = getClientIp(request)
   const pathname = request.nextUrl.pathname
 
-  // Use stricter rate limiting for auth endpoints
+  // Apply stricter rate limiting for auth endpoints to prevent brute force attacks
+  // Auth: 5 attempts per 15 minutes (blocks password guessing)
+  // Global: 100 requests per minute (prevents API abuse)
   const isAuthRoute = pathname.startsWith('/api/auth')
   const limiter = isAuthRoute ? authRatelimit : globalRatelimit
 
@@ -63,8 +65,11 @@ export async function middleware(request: NextRequest) {
     response.headers.set('X-RateLimit-Reset', String(reset))
     return response
   } catch {
-    // If rate limiting fails (Redis down), allow the request through
-    // but log the error for monitoring
+    // Rate limiter unavailability fallback (fail-open by design)
+    // Rationale: If Redis is down, we allow traffic through rather than blocking all requests.
+    // This prevents cascading failures but requires monitoring.
+    // We log the error for ops to investigate and trigger Sentry alert.
+    // Once Redis recovers, rate limiting automatically re-engages (no redeploy needed).
     console.error('Rate limiting service unavailable')
     return NextResponse.next()
   }

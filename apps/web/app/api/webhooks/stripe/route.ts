@@ -25,7 +25,10 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Write every webhook event to AuditLog
+  // Write every webhook event to AuditLog BEFORE processing
+  // Rationale: If handler crashes after this line, we can replay the webhook from AuditLog.
+  // This enables recovery from temporary outages and ensures no payments are lost.
+  // We return 200 OK at the end so Stripe stops retrying, even if handler fails.
   await db.auditLog.create({
     data: {
       action: `stripe.webhook.${event.type}`,

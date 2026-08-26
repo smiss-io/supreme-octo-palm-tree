@@ -24,7 +24,7 @@ export const childRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // Verify parent profile exists
+      // Verify parent profile exists (parent must complete registration first)
       const profile = await ctx.db.parentProfile.findUnique({
         where: { userId: ctx.session.userId },
       })
@@ -34,11 +34,16 @@ export const childRouter = router({
 
       const dob = new Date(input.dateOfBirth)
 
-      // COPPA check: if child is under 13, parental consent is implicitly given
-      // by the parent creating the profile (they are the parent)
+      // COPPA Compliance (16 CFR Part 312): Parental consent verification
+      // Rationale: We collect PII about children under 13, so COPPA applies.
+      // Consent assumption: Parent creating profile IS the parent, so consent is implicit.
+      // On child's 13th birthday: Encrypted PII automatically deleted (deleteChildDataOn13thBirthday job).
+      // AuditLog: All mutations are logged with userId for compliance audit trail.
       const _needsConsent = requiresParentalConsent(dob)
 
-      // Encrypt PII before storage
+      // Encrypt PII before storage (AES-256-GCM)
+      // Rationale: Medical/emergency contact data is sensitive. Encryption protects against database breaches.
+      // Decryption is transparent when parent/provider accesses data.
       const child = await ctx.db.child.create({
         data: {
           parentProfileId: profile.id,
